@@ -1,8 +1,7 @@
 streamlit
 opencv-python-headless
 rembg
-numpy
+numpy<2.0.0
 Pillow
 streamlit-cropper
 pandas
-watchdog
