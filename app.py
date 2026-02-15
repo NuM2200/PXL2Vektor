@@ -65,7 +65,10 @@ def bild_laden_und_freistellen(pil_image, hintergrund_entfernen):
             final_image = pil_image.convert("RGB")
             
         return np.array(final_image)[:, :, ::-1].copy()
-    except Exception: return None
+    except Exception as e:
+        import streamlit as st
+        st.error(f"Fehler bei der Verarbeitung: {e}")
+        return None
 
 def erstelle_skizze_live(image, algorithmus, blur, thresh, noise, erode, invert, light_fix):
     if light_fix: image = bild_verbessern_clahe(image)
