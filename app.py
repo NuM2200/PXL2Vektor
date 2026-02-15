@@ -1,7 +1,6 @@
 import streamlit as st
 import cv2
 import numpy as np
-from rembg import remove
 from PIL import Image
 import io
 import os
@@ -52,7 +51,11 @@ def bild_laden_und_freistellen(pil_image, hintergrund_entfernen):
         img_byte_arr = io.BytesIO()
         pil_image.save(img_byte_arr, format='PNG')
         input_data = img_byte_arr.getvalue()
+        
         if hintergrund_entfernen:
+            # --- HIER IST DER TRICK: ---
+            from rembg import remove  # Erst importieren, wenn wir es wirklich brauchen!
+            
             output_data = remove(input_data)
             pil_image = Image.open(io.BytesIO(output_data)).convert("RGBA")
             white_bg = Image.new("RGBA", pil_image.size, "WHITE")
@@ -60,6 +63,7 @@ def bild_laden_und_freistellen(pil_image, hintergrund_entfernen):
             final_image = white_bg.convert("RGB")
         else:
             final_image = pil_image.convert("RGB")
+            
         return np.array(final_image)[:, :, ::-1].copy()
     except Exception: return None
 
@@ -234,3 +238,7 @@ if uploaded_file:
                 
                 if btn:
                     log_event("Download", f"SVG heruntergeladen (Pro: {is_pro})")
+
+# --- FOOTER / DATENSCHUTZ ---
+st.markdown("---")
+st.caption("🔒 **Datenschutz-Hinweis:** Deine Bilder werden nur im Arbeitsspeicher verarbeitet und nicht dauerhaft gespeichert. Nach dem Schließen des Browsers sind sie weg. Lediglich anonyme Nutzungsstatistiken (Klicks) werden für dieses Studienprojekt erfasst.")
