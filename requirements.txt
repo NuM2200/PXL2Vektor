@@ -5,3 +5,4 @@ numpy<2.0.0
 Pillow
 streamlit-cropper
 pandas
+onnxruntime
