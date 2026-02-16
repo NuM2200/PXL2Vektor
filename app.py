@@ -12,33 +12,36 @@ import csv
 from datetime import datetime
 import pandas as pd
 
-# --- 1. KONFIGURATION ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Plotter Converter", page_icon="✂️", layout="wide")
 
-# --- 2. LOGGER FUNKTION (Speichert Daten in Excel/CSV) ---
-LOG_FILE = "nutzungsdaten.csv"
+# --- 2. LOGGER FUNCTION (Saves data to Excel/CSV) ---
+LOG_FILE = "usage_data.csv"
 
 def log_event(event_type, detail):
-    """Schreibt eine Zeile in die CSV Datei"""
+    """Writes a row to the CSV file"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Prüfen ob Datei existiert, wenn nicht: Header schreiben
+    # Check if file exists to determine if we need a header
     file_exists = os.path.isfile(LOG_FILE)
     
-    with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["Zeitstempel", "Event", "Detail"]) # Kopfzeile
-        
-        writer.writerow([timestamp, event_type, detail])
+    try:
+        with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["Timestamp", "Event", "Detail"]) # Header
+            
+            writer.writerow([timestamp, event_type, detail])
+    except Exception as e:
+        print(f"Logging Error: {e}")
 
-# --- 3. HELFER FUNKTIONEN (Bildverarbeitung) ---
+# --- 3. HELPER FUNCTIONS (Image Processing) ---
 
-def bild_vorbehandeln(image, helligkeit, kontrast):
-    adjusted = cv2.convertScaleAbs(image, alpha=kontrast, beta=helligkeit)
+def preprocess_image(image, brightness, contrast):
+    adjusted = cv2.convertScaleAbs(image, alpha=contrast, beta=brightness)
     return adjusted
 
-def bild_verbessern_clahe(image_bgr):
+def enhance_image_clahe(image_bgr):
     lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
@@ -46,15 +49,15 @@ def bild_verbessern_clahe(image_bgr):
     limg = cv2.merge((cl,a,b))
     return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
 
-def bild_laden_und_freistellen(pil_image, hintergrund_entfernen):
+def load_and_remove_bg(pil_image, remove_background):
     try:
         img_byte_arr = io.BytesIO()
         pil_image.save(img_byte_arr, format='PNG')
         input_data = img_byte_arr.getvalue()
         
-        if hintergrund_entfernen:
-            # --- HIER IST DER TRICK: ---
-            from rembg import remove  # Erst importieren, wenn wir es wirklich brauchen!
+        if remove_background:
+            # --- LAZY IMPORT ---
+            from rembg import remove 
             
             output_data = remove(input_data)
             pil_image = Image.open(io.BytesIO(output_data)).convert("RGBA")
@@ -66,15 +69,14 @@ def bild_laden_und_freistellen(pil_image, hintergrund_entfernen):
             
         return np.array(final_image)[:, :, ::-1].copy()
     except Exception as e:
-        import streamlit as st
-        st.error(f"Fehler bei der Verarbeitung: {e}")
+        st.error(f"Processing Error: {e}")
         return None
 
-def erstelle_skizze_live(image, algorithmus, blur, thresh, noise, erode, invert, light_fix):
-    if light_fix: image = bild_verbessern_clahe(image)
+def create_sketch_live(image, algorithm, blur, thresh, noise, erode, invert, light_fix):
+    if light_fix: image = enhance_image_clahe(image)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    if algorithmus == "Künstlerisch (Skizze)":
+    if algorithm == "Artistic (Sketch)":
         inv = 255 - gray
         if blur % 2 == 0: blur += 1
         blurred = cv2.GaussianBlur(inv, (blur, blur), 0)
@@ -92,15 +94,15 @@ def erstelle_skizze_live(image, algorithmus, blur, thresh, noise, erode, invert,
     
     inv_bin = cv2.bitwise_not(binary) 
     contours, _ = cv2.findContours(inv_bin, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    sauber = np.zeros_like(inv_bin)
+    clean = np.zeros_like(inv_bin)
     for cnt in contours:
-        if cv2.contourArea(cnt) > noise: cv2.drawContours(sauber, [cnt], -1, 255, -1)
+        if cv2.contourArea(cnt) > noise: cv2.drawContours(clean, [cnt], -1, 255, -1)
     
-    final_result = cv2.bitwise_not(sauber)
+    final_result = cv2.bitwise_not(clean)
     if invert: return cv2.bitwise_not(final_result)
     return final_result
 
-def erstelle_svg_datei(binary_image):
+def create_svg_file(binary_image):
     with tempfile.NamedTemporaryFile(suffix=".bmp", delete=False) as tmp_bmp:
         cv2.imwrite(tmp_bmp.name, binary_image)
         bmp_path = tmp_bmp.name
@@ -108,7 +110,8 @@ def erstelle_svg_datei(binary_image):
     try:
         subprocess.run(["potrace", bmp_path, "-s", "--turdsize", "10", "--alphamax", "1.0", "-o", svg_path], stdout=subprocess.DEVNULL, check=True)
         with open(svg_path, "r", encoding="utf-8") as f: svg_content = f.read()
-        os.remove(bmp_path); os.remove(svg_path)
+        if os.path.exists(bmp_path): os.remove(bmp_path)
+        if os.path.exists(svg_path): os.remove(svg_path)
         return svg_content
     except Exception: return None
 
@@ -117,131 +120,142 @@ def render_svg_html(svg_string):
     return f'<img src="data:image/svg+xml;base64,{b64}" style="max-width: 100%; border: 1px solid #ddd; padding: 10px;"/>'
 
 
-# --- 4. HAUPTPROGRAMM ---
+# --- 4. MAIN PROGRAM ---
 
-# Tracking: Seitenaufruf loggen (passiert bei jedem Reload)
+# Tracking: Log page visits (happens on every reload)
 if 'has_logged_start' not in st.session_state:
-    log_event("Besuch", "Seite geöffnet / Neu geladen")
+    log_event("Visit", "Page opened / reloaded")
     st.session_state['has_logged_start'] = True
 
-# --- UI LOGIK (FREEMIUM) ---
-st.sidebar.title("💎 Version wählen")
+# --- UI LOGIC (FREEMIUM) ---
+st.sidebar.title("💎 Select Version")
 app_mode = st.sidebar.radio("Status:", ["Free Version", "Pro Version (Upgrade)"])
 
-# Tracking: Wenn der Nutzer den Modus wechselt
+# Tracking: When user switches mode
 if 'last_mode' not in st.session_state or st.session_state['last_mode'] != app_mode:
-    log_event("Modus Wechsel", f"Gewechselt zu: {app_mode}")
+    log_event("Mode Switch", f"Switched to: {app_mode}")
     st.session_state['last_mode'] = app_mode
 
 is_pro = (app_mode == "Pro Version (Upgrade)")
 
 st.title("✂️ Plotter Converter")
 if not is_pro:
-    st.info("Du nutzt die **Free Version**. Upgrade auf **Pro**, um Zuschneiden, Lichtkorrektur und Profi-Filter freizuschalten!")
+    st.info("You are using the **Free Version**. Upgrade to **Pro** to unlock Cropping, Light Correction, and Advanced Filters!")
 else:
-    st.success("✨ **Pro Version** aktiv. Alle Features freigeschaltet!")
+    st.success("✨ **Pro Version** active. All features unlocked!")
 
-# --- ADMIN BEREICH (Versteckt in Sidebar ganz unten) ---
-# Hier kannst du die Daten herunterladen!
+# --- ADMIN AREA (Hidden in sidebar at the bottom) ---
 st.sidebar.markdown("---")
-with st.sidebar.expander("🔐 Admin / Auswertung"):
-    password = st.text_input("Passwort", type="password")
-    if password == "study2024": # <--- DEIN PASSWORT
+with st.sidebar.expander("🔐 Admin / Analytics"):
+    password = st.text_input("Password", type="password")
+    if password == "study2024": # <--- YOUR PASSWORD
         if os.path.exists(LOG_FILE):
-            st.write("📊 Nutzungsdaten:")
+            st.write("📊 Usage Data:")
             df = pd.read_csv(LOG_FILE)
             st.dataframe(df)
             
             with open(LOG_FILE, "rb") as f:
-                st.download_button("📥 CSV Datei herunterladen", f, file_name="nutzungsdaten.csv")
+                st.download_button("📥 Download CSV File", f, file_name="usage_data.csv")
         else:
-            st.warning("Noch keine Daten vorhanden.")
+            st.warning("No data available yet.")
 
-# --- STEUERUNG ---
+# --- CONTROLS ---
 st.sidebar.markdown("---")
-st.sidebar.header("🎛️ Einstellungen")
+st.sidebar.header("🎛️ Settings")
 
 if is_pro:
-    with st.sidebar.expander("🛠️ Vorbehandlung (Pro)", expanded=True):
-        pre_contrast = st.slider("Kontrast", 0.5, 3.0, 1.0, 0.1)
-        pre_brightness = st.slider("Helligkeit", -100, 100, 0, 5)
+    with st.sidebar.expander("🛠️ Pre-processing (Pro)", expanded=True):
+        pre_contrast = st.slider("Contrast", 0.5, 3.0, 1.0, 0.1)
+        pre_brightness = st.slider("Brightness", -100, 100, 0, 5)
     
-    algo = st.sidebar.radio("Stil:", ["Künstlerisch (Skizze)", "Scanner (Adaptiv)"])
-    p_blur = st.sidebar.slider("Detailgrad", 1, 151, 55, 2)
-    p_thresh = st.sidebar.slider("Schwelle", 0, 255, 235, 1)
-    p_noise = st.sidebar.slider("Rauschen entfernen", 0, 200, 50, 1)
-    p_erode = st.sidebar.slider("Linien dicker", 0, 3, 0, 1)
+    algo = st.sidebar.radio("Style:", ["Artistic (Sketch)", "Scanner (Adaptive)"])
+    p_blur = st.sidebar.slider("Detail Level", 1, 151, 55, 2)
+    p_thresh = st.sidebar.slider("Threshold", 0, 255, 235, 1)
+    p_noise = st.sidebar.slider("Remove Noise", 0, 200, 50, 1)
+    p_erode = st.sidebar.slider("Thicken Lines", 0, 3, 0, 1)
     
-    st.sidebar.subheader("Optionen")
-    opt_light = st.sidebar.checkbox("💡 Autom. Licht-Balance", value=True)
-    opt_bg_weg = st.sidebar.checkbox("Hintergrund entfernen", value=True)
-    opt_invert = st.sidebar.checkbox("Invertieren", value=False)
+    st.sidebar.subheader("Options")
+    opt_light = st.sidebar.checkbox("💡 Auto Light Balance", value=True)
+    opt_bg_weg = st.sidebar.checkbox("Remove Background", value=True)
+    opt_invert = st.sidebar.checkbox("Invert Colors", value=False)
 else:
-    st.sidebar.warning("🔒 Vorbehandlung gesperrt (Pro)")
+    st.sidebar.warning("🔒 Pre-processing locked (Pro)")
     pre_contrast = 1.0; pre_brightness = 0
-    st.sidebar.info("Stil: Standard (Künstlerisch)")
-    algo = "Künstlerisch (Skizze)"
-    p_thresh = st.sidebar.slider("Helligkeit anpassen", 100, 255, 235, 5)
+    st.sidebar.info("Style: Standard (Artistic)")
+    algo = "Artistic (Sketch)"
+    p_thresh = st.sidebar.slider("Adjust Brightness", 100, 255, 235, 5)
     p_blur = 55; p_noise = 50; p_erode = 0
     opt_light = False; opt_invert = False; opt_bg_weg = True 
 
-# --- HAUPTBEREICH ---
-uploaded_file = st.file_uploader("Bild hochladen", type=['png', 'jpg', 'jpeg'])
+# --- MAIN AREA ---
+uploaded_file = st.file_uploader("Upload Image", type=['png', 'jpg', 'jpeg'])
 
 if uploaded_file:
     # Tracking: Upload
     if 'last_upload' not in st.session_state or st.session_state['last_upload'] != uploaded_file.name:
-        log_event("Bild Upload", "Neues Bild geladen")
+        log_event("Image Upload", "New image uploaded")
         st.session_state['last_upload'] = uploaded_file.name
 
     image_pil = Image.open(uploaded_file)
     
     if is_pro:
-        st.subheader("1. Zuschneiden (Pro Feature)")
+        st.subheader("1. Crop Image (Pro Feature)")
         working_image_pil = st_cropper(image_pil, realtime_update=True, box_color='#FF0000', aspect_ratio=None)
         st.markdown("---")
     else:
-        st.subheader("1. Original Bild")
-        st.image(image_pil, caption="Original (Zuschneiden nur in Pro)", width=400)
-        st.caption("🔒 Zuschneiden ist ein Pro-Feature")
+        st.subheader("1. Original Image")
+        st.image(image_pil, caption="Original (Cropping only in Pro)", width=400)
+        st.caption("🔒 Cropping is a Pro-Feature")
         working_image_pil = image_pil
 
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("2. Verarbeitung")
-        with st.spinner('Arbeite...'):
-            raw_img = bild_laden_und_freistellen(working_image_pil, opt_bg_weg)
+        st.subheader("2. Processing")
+        with st.spinner('Processing...'):
+            raw_img = load_and_remove_bg(working_image_pil, opt_bg_weg)
             
         if raw_img is not None:
-            adjusted_img = bild_vorbehandeln(raw_img, pre_brightness, pre_contrast)
+            adjusted_img = preprocess_image(raw_img, pre_brightness, pre_contrast)
             st.image(cv2.cvtColor(adjusted_img, cv2.COLOR_BGR2RGB), use_container_width=True)
 
     with col2:
-        st.subheader("3. Ergebnis")
+        st.subheader("3. Result")
         if raw_img is not None:
-            result_bin = erstelle_skizze_live(adjusted_img, algo, p_blur, p_thresh, p_noise, p_erode, opt_invert, opt_light)
+            result_bin = create_sketch_live(adjusted_img, algo, p_blur, p_thresh, p_noise, p_erode, opt_invert, opt_light)
             
             if not is_pro:
-                st.caption("Free Version Vorschau")
+                st.caption("Free Version Preview")
             
-            st.image(result_bin, caption="Ergebnis", use_container_width=True)
+            st.image(result_bin, caption="Result", use_container_width=True)
             
-            svg_data = erstelle_svg_datei(result_bin)
+            svg_data = create_svg_file(result_bin)
+            
             if svg_data:
+                # 1. Preview (Feature Gating)
                 if is_pro:
-                    with st.expander("🔍 Vektor-Vorschau (Pro)"):
+                    with st.expander("🔍 Vector Preview (Pro)"):
                         st.markdown(render_svg_html(svg_data), unsafe_allow_html=True)
                 else:
-                     with st.expander("🔍 Vektor-Vorschau (Pro)"):
-                        st.warning("🔒 Vektor-Vorschau nur in der Pro Version sichtbar.")
+                     with st.expander("🔍 Vector Preview (Pro)"):
+                        st.warning("🔒 Vector preview visible in Pro Version only.")
 
-                # Button Logik separat, damit wir den Klick tracken können
-                btn = st.download_button("⬇️ SVG Download", svg_data, "plot.svg", "image/svg+xml", type="primary")
-                
-                if btn:
-                    log_event("Download", f"SVG heruntergeladen (Pro: {is_pro})")
+                # 2. Logging Callback Logic
+                def log_download_click():
+                    mode_text = "PRO" if is_pro else "FREE"
+                    detail_text = f"SVG Download started (Mode: {mode_text})"
+                    log_event("Download", detail_text)
 
-# --- FOOTER / DATENSCHUTZ ---
+                # 3. The Button with Callback (on_click)
+                st.download_button(
+                    label="⬇️ SVG Download", 
+                    data=svg_data, 
+                    file_name="plot.svg", 
+                    mime="image/svg+xml", 
+                    type="primary",
+                    on_click=log_download_click 
+                )
+
+# --- FOOTER / PRIVACY ---
 st.markdown("---")
-st.caption("🔒 **Datenschutz-Hinweis:** Deine Bilder werden nur im Arbeitsspeicher verarbeitet und nicht dauerhaft gespeichert. Nach dem Schließen des Browsers sind sie weg. Lediglich anonyme Nutzungsstatistiken (Klicks) werden für dieses Studienprojekt erfasst.")
+st.caption("🔒 **Privacy Notice:** Your images are processed in memory only and are not stored permanently. They disappear once you close the browser. Only anonymous usage statistics (clicks) are recorded for this study project.")
